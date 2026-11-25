@@ -1,0 +1,457 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  SUPPORT
+  BUYER
+}
+
+enum UserStatus {
+  ACTIVE
+  LOCKED
+  ANONYMIZED
+}
+
+enum ProductStatus {
+  AVAILABLE
+  UNAVAILABLE
+  HIDDEN
+}
+
+enum OrderStatus {
+  AWAITING_PAYMENT
+  PROCESSING
+  COMPLETED
+  FAILED
+  NEEDS_REVIEW
+  CANCELLED
+  REFUNDED
+}
+
+enum ProviderRequestStatus {
+  PENDING
+  SENT
+  SUCCEEDED
+  FAILED
+  AMBIGUOUS
+}
+
+enum DepositStatus {
+  PENDING
+  CONFIRMED
+  CONFIRMED_LATE
+  REJECTED
+  EXPIRED
+}
+
+enum LedgerEntryType {
+  DEPOSIT
+  HOLD
+  CAPTURE
+  RELEASE
+  REFUND
+  ADMIN_ADJUSTMENT
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING_CUSTOMER
+  RESOLVED
+  CLOSED
+}
+
+model User {
+  id              String     @id @default(cuid())
+  email           String     @unique
+  emailNormalized String     @unique
+  username        String     @unique
+  usernameNorm    String     @unique
+  passwordHash    String
+  role            Role       @default(BUYER)
+  status          UserStatus @default(ACTIVE)
+  emailVerifiedAt DateTime?  @db.Timestamptz
+  lockedUntil     DateTime?  @db.Timestamptz
+  failedLoginCnt  Int        @default(0)
+  createdAt       DateTime   @default(now()) @db.Timestamptz
+  updatedAt       DateTime   @updatedAt @db.Timestamptz
+
+  sessions                Session[]
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+  adminTotp               AdminTotp?
+  adminRecoveryCodes      AdminRecoveryCode[]
+  wallet                  Wallet?
+  cart                    Cart?
+  orders                  Order[]
+  depositRequests         DepositRequest[]         @relation("UserDeposits")
+  reviewedDeposits        DepositRequest[]         @relation("AdminReviewedDeposits")
+  supportTickets          SupportTicket[]          @relation("UserTickets")
+  supportMessages         SupportMessage[]
+  auditLogs               AuditLog[]               @relation("ActorAuditLogs")
+  priceRules              PriceRule[]
+
+  @@index([role, status])
+}
+
+model Session {
+  id           String    @id @default(cuid())
+  userId       String
+  tokenHash    String    @unique
+  ipAddress    String?
+  userAgent    String?
+  lastActiveAt DateTime  @default(now()) @db.Timestamptz
+  expiresAt    DateTime  @db.Timestamptz
+  stepUpAt     DateTime? @db.Timestamptz
+  revokedAt    DateTime? @db.Timestamptz
+  createdAt    DateTime  @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime  @db.Timestamptz
+  usedAt    DateTime? @db.Timestamptz
+  createdAt DateTime  @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime  @db.Timestamptz
+  usedAt    DateTime? @db.Timestamptz
+  createdAt DateTime  @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model AdminTotp {
+  id         String    @id @default(cuid())
+  userId     String    @unique
+  secretEnc  String
+  enabledAt  DateTime? @db.Timestamptz
+  createdAt  DateTime  @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model AdminRecoveryCode {
+  id        String    @id @default(cuid())
+  userId    String
+  codeHash  String
+  usedAt    DateTime? @db.Timestamptz
+  createdAt DateTime  @default(now()) @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Product {
+  id           String        @id @default(cuid())
+  provider     String
+  externalId   String
+  name         String
+  description  String        @default("")
+  category     String        @default("Chưa phân loại")
+  sourcePrice  BigInt
+  salePrice    BigInt
+  status       ProductStatus @default(AVAILABLE)
+  imageUrl     String?
+  sourceHash   String
+  lastSyncedAt DateTime      @db.Timestamptz
+  createdAt    DateTime      @default(now()) @db.Timestamptz
+  updatedAt    DateTime      @updatedAt @db.Timestamptz
+
+  cartItems  CartItem[]
+  orderItems OrderItem[]
+
+  @@unique([provider, externalId])
+  @@index([status, category])
+  @@index([name])
+}
+
+model SyncRun {
+  id          String    @id @default(cuid())
+  provider    String
+  startedAt   DateTime  @default(now()) @db.Timestamptz
+  finishedAt  DateTime? @db.Timestamptz
+  status      String
+  syncedCount Int       @default(0)
+  errorSafe   String?
+
+  @@index([provider, startedAt])
+}
+
+model PriceRule {
+  id           String   @id @default(cuid())
+  scope        String   @default("GLOBAL")
+  markupType   String
+  markupValue  BigInt
+  roundingStep BigInt   @default(1000)
+  reason       String
+  changedById  String
+  createdAt    DateTime @default(now()) @db.Timestamptz
+
+  changedBy User @relation(fields: [changedById], references: [id], onDelete: Restrict)
+}
+
+model Cart {
+  id        String     @id @default(cuid())
+  userId    String?    @unique
+  anonToken String?    @unique
+  updatedAt DateTime   @updatedAt @db.Timestamptz
+  items     CartItem[]
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model CartItem {
+  id        String   @id @default(cuid())
+  cartId    String
+  productId String
+  quantity  Int      @default(1)
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  cart    Cart    @relation(fields: [cartId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([cartId, productId])
+}
+
+model Wallet {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  balance   BigInt   @default(0)
+  held      BigInt   @default(0)
+  updatedAt DateTime @updatedAt @db.Timestamptz
+
+  user          User          @relation(fields: [userId], references: [id], onDelete: Restrict)
+  ledgerEntries LedgerEntry[]
+}
+
+model LedgerEntry {
+  id             String          @id @default(cuid())
+  walletId       String
+  type           LedgerEntryType
+  amount         BigInt
+  balanceAfter   BigInt
+  refType        String
+  refId          String
+  idempotencyKey String          @unique
+  reason         String
+  actorId        String?
+  createdAt      DateTime        @default(now()) @db.Timestamptz
+
+  wallet Wallet @relation(fields: [walletId], references: [id], onDelete: Restrict)
+
+  @@index([walletId, createdAt])
+  @@index([refType, refId])
+}
+
+model DepositRequest {
+  id                 String        @id @default(cuid())
+  userId             String
+  referenceCode      String        @unique
+  requestedAmount    BigInt
+  actualAmount       BigInt?
+  status             DepositStatus @default(PENDING)
+  receiptBlobUrl     String?
+  expiresAt          DateTime      @db.Timestamptz
+  reviewedById       String?
+  reviewedAt         DateTime?     @db.Timestamptz
+  reviewNote         String?
+  createdAt          DateTime      @default(now()) @db.Timestamptz
+  updatedAt          DateTime      @updatedAt @db.Timestamptz
+
+  user       User                   @relation("UserDeposits", fields: [userId], references: [id], onDelete: Restrict)
+  reviewedBy User?                  @relation("AdminReviewedDeposits", fields: [reviewedById], references: [id], onDelete: Restrict)
+  history    PaymentStatusHistory[]
+
+  @@index([userId, status])
+  @@index([status, expiresAt])
+}
+
+model PaymentStatusHistory {
+  id         String        @id @default(cuid())
+  depositId  String
+  fromStatus DepositStatus
+  toStatus   DepositStatus
+  actorId    String?
+  reason     String
+  createdAt  DateTime      @default(now()) @db.Timestamptz
+
+  deposit DepositRequest @relation(fields: [depositId], references: [id], onDelete: Restrict)
+
+  @@index([depositId])
+}
+
+model Order {
+  id             String      @id @default(cuid())
+  orderCode      String      @unique
+  userId         String
+  status         OrderStatus @default(PROCESSING)
+  totalAmount    BigInt
+  idempotencyKey String      @unique
+  deliveredData  String?
+  createdAt      DateTime    @default(now()) @db.Timestamptz
+  updatedAt      DateTime    @updatedAt @db.Timestamptz
+
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Restrict)
+  items            OrderItem[]
+  statusHistory    OrderStatusHistory[]
+  providerRequests ProviderRequest[]
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model OrderItem {
+  id           String  @id @default(cuid())
+  orderId      String
+  productId    String
+  productName  String
+  unitPrice    BigInt
+  quantity     Int
+  subtotal     BigInt
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model OrderStatusHistory {
+  id         String      @id @default(cuid())
+  orderId    String
+  fromStatus OrderStatus
+  toStatus   OrderStatus
+  actorId    String?
+  reason     String
+  createdAt  DateTime    @default(now()) @db.Timestamptz
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+}
+
+model ProviderRequest {
+  id                String                @id @default(cuid())
+  orderId           String
+  provider          String
+  idempotencyKey    String                @unique
+  externalOrderId   String?
+  status            ProviderRequestStatus @default(PENDING)
+  lastErrorSafe     String?
+  attempts          Int                   @default(0)
+  createdAt         DateTime              @default(now()) @db.Timestamptz
+  updatedAt         DateTime              @updatedAt @db.Timestamptz
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Restrict)
+
+  @@index([status, updatedAt])
+}
+
+model StoreSettings {
+  id               String   @id @default("singleton")
+  storeName        String   @default("Cửa hàng trực tuyến")
+  bankName         String   @default("")
+  bankAccountNo    String   @default("")
+  bankAccountOwner String   @default("")
+  bankBranch       String   @default("")
+  supportEmail     String   @default("")
+  refundPolicyNote String   @default("")
+  updatedAt        DateTime @updatedAt @db.Timestamptz
+}
+
+model SupportTicket {
+  id        String       @id @default(cuid())
+  userId    String
+  subject   String
+  status    TicketStatus @default(OPEN)
+  orderId   String?
+  createdAt DateTime     @default(now()) @db.Timestamptz
+  updatedAt DateTime     @updatedAt @db.Timestamptz
+
+  user     User             @relation("UserTickets", fields: [userId], references: [id], onDelete: Restrict)
+  messages SupportMessage[]
+
+  @@index([userId, status])
+}
+
+model SupportMessage {
+  id        String   @id @default(cuid())
+  ticketId  String
+  senderId  String
+  body      String
+  isStaff   Boolean  @default(false)
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  ticket SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  sender User          @relation(fields: [senderId], references: [id], onDelete: Restrict)
+
+  @@index([ticketId, createdAt])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  actorId   String?
+  action    String
+  target    String
+  reason    String?
+  metadata  Json?
+  prevHash  String
+  hash      String
+  createdAt DateTime @default(now()) @db.Timestamptz
+
+  actor User? @relation("ActorAuditLogs", fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@index([createdAt])
+  @@index([action])
+}
+
+model ProcessedEvent {
+  id          String   @id @default(cuid())
+  provider    String
+  eventId     String   @unique
+  processedAt DateTime @default(now()) @db.Timestamptz
+}
+
+model IdempotencyRecord {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  scope       String
+  response    Json
+  expiresAt   DateTime @db.Timestamptz
+  createdAt   DateTime @default(now()) @db.Timestamptz
+
+  @@index([expiresAt])
+}
+
+model RateLimitBucket {
+  id        String   @id
+  count     Int      @default(0)
+  resetAt   DateTime @db.Timestamptz
+}
